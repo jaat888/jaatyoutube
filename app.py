@@ -18,12 +18,27 @@ if DB_URL and not _b64:
     COOKIES = os.path.join(os.environ.get("HOME", "."), "cookies.txt")
 
 
+def _db_connect():
+    # Blitz ka DB app ke saath sota/jagta hai; wake hote hi 1-2 try fail ho sakti hain
+    # isliye thodi der ruk ruk ke dobara try karte hain (kul ~16s tak)
+    import psycopg
+    delays = [0, 1, 2, 4, 4, 5]
+    last = None
+    for d in delays:
+        if d:
+            time.sleep(d)
+        try:
+            return psycopg.connect(DB_URL, connect_timeout=10)
+        except Exception as e:
+            last = e
+    raise last
+
+
 def db_load():
     if not DB_URL:
         return None
     try:
-        import psycopg
-        with psycopg.connect(DB_URL, connect_timeout=10) as c:
+        with _db_connect() as c:
             c.execute("create table if not exists kv(k text primary key, v text)")
             r = c.execute("select v from kv where k='cookies'").fetchone()
             return r[0] if r else None
@@ -35,8 +50,7 @@ def db_save(txt):
     if not DB_URL:
         return False
     try:
-        import psycopg
-        with psycopg.connect(DB_URL, connect_timeout=10) as c:
+        with _db_connect() as c:
             c.execute("create table if not exists kv(k text primary key, v text)")
             c.execute("insert into kv(k,v) values('cookies',%s) on conflict (k) do update set v=excluded.v", (txt,))
         return True
