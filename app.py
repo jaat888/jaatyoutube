@@ -1,13 +1,18 @@
 """YTV server: yt-dlp ke upar chhota API. TV app sirf list leti hai aur link chalati hai.
-Env: API_KEY (zaroor set karo), MAX_JOBS=2, MAX_HEIGHT=720, COOKIES_FILE=cookies.txt (optional)
+Env: API_KEY (zaroor set karo), MAX_JOBS=2, MAX_HEIGHT=720, COOKIES_FILE=cookies.txt ya COOKIES_B64 (optional)
 """
-import os, time, threading
+import os, time, threading, base64
 import requests
 from flask import Flask, request, jsonify, Response
 from yt_dlp import YoutubeDL
 
 KEY = os.environ.get("API_KEY", "")
 COOKIES = os.environ.get("COOKIES_FILE", "cookies.txt")
+_b64 = os.environ.get("COOKIES_B64", "")  # cookies.txt ko base64 karke env mein (public image mein file mat daalo)
+if _b64:
+    COOKIES = os.path.join(os.environ.get("HOME", "."), "cookies.txt")
+    with open(COOKIES, "wb") as _f:
+        _f.write(base64.b64decode(_b64))
 MAXH = int(os.environ.get("MAX_HEIGHT", "720"))
 PLAY_TTL, LIST_TTL = 5 * 3600, 600
 
@@ -173,6 +178,29 @@ def stream():
     keep = ("content-type", "content-length", "content-range", "accept-ranges")
     return Response(up.iter_content(64 * 1024), status=up.status_code,
                     headers={k: v for k, v in up.headers.items() if k.lower() in keep})
+
+
+LOGIN_HTML = """<!doctype html><meta name=viewport content="width=device-width,initial-scale=1">
+<body style="font-family:sans-serif;max-width:640px;margin:20px auto;padding:0 12px">
+<h3>YTV login (cookies)</h3><p>Status: <b>%s</b></p>
+<p>Browser mein YouTube par login karke cookies.txt (Netscape format) export karo aur yahan paste karo.</p>
+<form method=post><textarea name=c rows=12 style="width:100%%" placeholder="# Netscape HTTP Cookie File ..."></textarea>
+<br><button style="padding:10px 18px;margin-top:8px">Save</button></form></body>"""
+
+
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    if request.method == "POST":
+        txt = (request.form.get("c") or "").strip()
+        if len(txt) > 300000 or ("youtube.com" not in txt and "google.com" not in txt):
+            return Response("cookies.txt jaisa nahi lag raha", 400)
+        with open(COOKIES, "w", encoding="utf-8") as f:
+            f.write(txt + "\n")
+        with _clock:
+            _cache.clear()
+        return Response("Saved. Ab /feed?name=subs try karo.", 200)
+    st = "cookies mili hui hain" if os.path.isfile(COOKIES) else "cookies nahi hain"
+    return Response(LOGIN_HTML % st, mimetype="text/html")
 
 
 if __name__ == "__main__":
