@@ -1,5 +1,5 @@
 """YTV server: yt-dlp ke upar chhota API. TV app sirf list leti hai aur link chalati hai.
-Env: API_KEY (zaroor set karo), MAX_JOBS=2, MAX_HEIGHT=720, COOKIES_FILE ya COOKIES_B64 (optional), YT_PROXY (optional), DATABASE_URL (cookies ko restart ke baad bachane ke liye)
+Env: API_KEY (zaroor set karo), MAX_JOBS=2, MAX_HEIGHT=720, COOKIES_FILE ya COOKIES_B64 (optional), YT_PROXY (optional), DB connection string (cookies ko restart ke baad bachane ke liye)
 """
 import os, time, threading, base64
 import requests
@@ -297,7 +297,7 @@ def login():
             _saved_mtime = os.path.getmtime(COOKIES)
         with _clock:
             _cache.clear()
-        note = "DB mein bhi save (restart par bachegi)." if stored else "DATABASE_URL nahi/fail: sirf is run tak bachegi."
+        note = "DB mein bhi save (restart par bachegi)." if stored else "DB se save nahi hui/fail: sirf is run tak bachegi."
         return Response("Saved. " + note + " Ab /feed?name=subs try karo.", 200)
     st = "cookies mili hui hain" if os.path.isfile(COOKIES) else "cookies nahi hain"
     return Response(LOGIN_HTML % st, mimetype="text/html")
