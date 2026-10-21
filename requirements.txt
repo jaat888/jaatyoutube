@@ -2,3 +2,4 @@ flask
 gunicorn
 requests
 yt-dlp[default]
+psycopg[binary]

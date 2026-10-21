@@ -1,5 +1,5 @@
 """YTV server: yt-dlp ke upar chhota API. TV app sirf list leti hai aur link chalati hai.
-Env: API_KEY (zaroor set karo), MAX_JOBS=2, MAX_HEIGHT=720, COOKIES_FILE=cookies.txt ya COOKIES_B64 (optional)
+Env: API_KEY (zaroor set karo), MAX_JOBS=2, MAX_HEIGHT=720, COOKIES_FILE ya COOKIES_B64 (optional), YT_PROXY (optional), DATABASE_URL (cookies ko restart ke baad bachane ke liye)
 """
 import os, time, threading, base64
 import requests
@@ -13,6 +13,61 @@ if _b64:
     COOKIES = os.path.join(os.environ.get("HOME", "."), "cookies.txt")
     with open(COOKIES, "wb") as _f:
         _f.write(base64.b64decode(_b64))
+DB_URL = os.environ.get("DATABASE_URL", "")  # blitz.cloud PostgreSQL: restart/rebuild par bhi cookies bachengi
+if DB_URL and not _b64:
+    COOKIES = os.path.join(os.environ.get("HOME", "."), "cookies.txt")
+
+
+def db_load():
+    if not DB_URL:
+        return None
+    try:
+        import psycopg
+        with psycopg.connect(DB_URL, connect_timeout=10) as c:
+            c.execute("create table if not exists kv(k text primary key, v text)")
+            r = c.execute("select v from kv where k='cookies'").fetchone()
+            return r[0] if r else None
+    except Exception as e:
+        print("db_load fail:", e, flush=True)
+
+
+def db_save(txt):
+    if not DB_URL:
+        return False
+    try:
+        import psycopg
+        with psycopg.connect(DB_URL, connect_timeout=10) as c:
+            c.execute("create table if not exists kv(k text primary key, v text)")
+            c.execute("insert into kv(k,v) values('cookies',%s) on conflict (k) do update set v=excluded.v", (txt,))
+        return True
+    except Exception as e:
+        print("db_save fail:", e, flush=True)
+        return False
+
+
+_saved_mtime = 0.0
+
+
+def sync_cookies():  # yt-dlp cookies badalta rehta hai; naya version DB mein bhi rakho (10 min mein ek baar)
+    global _saved_mtime
+    try:
+        if DB_URL and os.path.isfile(COOKIES):
+            m = os.path.getmtime(COOKIES)
+            if m > _saved_mtime and time.time() - _saved_mtime > 600:
+                with open(COOKIES, encoding="utf-8") as f:
+                    if db_save(f.read()):
+                        _saved_mtime = m
+    except Exception:
+        pass
+
+
+_c = db_load()
+if _c:
+    with open(COOKIES, "w", encoding="utf-8") as _f:
+        _f.write(_c)
+    _saved_mtime = os.path.getmtime(COOKIES)
+
+PROXY = os.environ.get("YT_PROXY", "")  # optional: http://user:pass@host:port ya socks5://host:port
 MAXH = int(os.environ.get("MAX_HEIGHT", "720"))
 PLAY_TTL, LIST_TTL = 5 * 3600, 600
 
@@ -43,6 +98,8 @@ def opts(**kw):
          "socket_timeout": 15, "js_runtimes": {"node": {}}}
     if os.path.isfile(COOKIES):
         o["cookiefile"] = COOKIES
+    if PROXY:
+        o["proxy"] = PROXY
     o.update(kw)
     return o
 
@@ -57,7 +114,11 @@ def auth():
 
 @app.errorhandler(Exception)
 def err(e):
-    return jsonify(error=str(e)[:300]), 500
+    m = str(e)
+    low = m.lower()
+    if "not a bot" in low or "sign in" in low or "confirm you" in low:
+        return jsonify(error="bot", hint="YouTube ne bot check lagaya: /login se cookies daalo ya YT_PROXY lagao", detail=m[-200:]), 503
+    return jsonify(error=m[-300:]), 500
 
 
 def flat(url, n):
@@ -106,12 +167,13 @@ def resolve(vid, h):
                "ua": (v.get("http_headers") or {}).get("User-Agent", "Mozilla/5.0"),
                "took": round(time.time() - t, 1)}
         cset(k, res, PLAY_TTL)
+        sync_cookies()
         return res
 
 
 @app.get("/health")
 def health():
-    return jsonify(ok=True, cookies=os.path.isfile(COOKIES))
+    return jsonify(ok=True, cookies=os.path.isfile(COOKIES), db=bool(DB_URL))
 
 
 @app.get("/search")
@@ -143,7 +205,7 @@ def play():
     vid = request.args["id"]
     h = int(request.args.get("h", MAXH))
     r = dict(resolve(vid, h))
-    if request.args.get("proxy") == "1":  # direct link 403 de to Blitz se hoke chalao
+    if request.args.get("proxy", "1" if PROXY else "0") == "1":  # direct link 403 de to Blitz se hoke chalao
         base = request.host_url.rstrip("/")
         kq = f"&key={KEY}" if KEY else ""
         r["video"] = f"{base}/stream?id={vid}&k=v&h={h}{kq}"
@@ -174,7 +236,8 @@ def stream():
     hd = {"User-Agent": r["ua"]}
     if request.headers.get("Range"):
         hd["Range"] = request.headers["Range"]
-    up = requests.get(url, headers=hd, stream=True, timeout=20)
+    px = {"http": PROXY, "https": PROXY} if PROXY else None
+    up = requests.get(url, headers=hd, stream=True, timeout=20, proxies=px)
     keep = ("content-type", "content-length", "content-range", "accept-ranges")
     return Response(up.iter_content(64 * 1024), status=up.status_code,
                     headers={k: v for k, v in up.headers.items() if k.lower() in keep})
@@ -196,9 +259,14 @@ def login():
             return Response("cookies.txt jaisa nahi lag raha", 400)
         with open(COOKIES, "w", encoding="utf-8") as f:
             f.write(txt + "\n")
+        global _saved_mtime
+        stored = db_save(txt + "\n")
+        if stored:
+            _saved_mtime = os.path.getmtime(COOKIES)
         with _clock:
             _cache.clear()
-        return Response("Saved. Ab /feed?name=subs try karo.", 200)
+        note = "DB mein bhi save (restart par bachegi)." if stored else "DATABASE_URL nahi/fail: sirf is run tak bachegi."
+        return Response("Saved. " + note + " Ab /feed?name=subs try karo.", 200)
     st = "cookies mili hui hain" if os.path.isfile(COOKIES) else "cookies nahi hain"
     return Response(LOGIN_HTML % st, mimetype="text/html")
 
