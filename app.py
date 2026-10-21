@@ -68,6 +68,7 @@ if _c:
     _saved_mtime = os.path.getmtime(COOKIES)
 
 PROXY = os.environ.get("YT_PROXY", "")  # optional: http://user:pass@host:port ya socks5://host:port
+CLIENTS = os.environ.get("YT_CLIENTS", "")  # jaise: tv,mweb  (probe se pata chalega kaun chalta hai)
 MAXH = int(os.environ.get("MAX_HEIGHT", "720"))
 PLAY_TTL, LIST_TTL = 5 * 3600, 600
 
@@ -100,6 +101,8 @@ def opts(**kw):
         o["cookiefile"] = COOKIES
     if PROXY:
         o["proxy"] = PROXY
+    if CLIENTS:
+        o["extractor_args"] = {"youtube": {"player_client": [c.strip() for c in CLIENTS.split(",") if c.strip()]}}
     o.update(kw)
     return o
 
@@ -241,6 +244,21 @@ def stream():
     keep = ("content-type", "content-length", "content-range", "accept-ranges")
     return Response(up.iter_content(64 * 1024), status=up.status_code,
                     headers={k: v for k, v in up.headers.items() if k.lower() in keep})
+
+
+@app.get("/probe")
+def probe():  # har YouTube client ko ek-ek karke try karta hai, batata hai kaun chala aur kaun bot check mein atka
+    vid = request.args.get("id", "dQw4w9WgXcQ")
+    out = []
+    for c in ["default", "tv", "mweb", "web_safari", "ios", "android_vr", "web_embedded", "tv_simply"]:
+        t = time.time()
+        try:
+            with sem, YoutubeDL(opts(format="b", extractor_args={"youtube": {"player_client": [c]}})) as y:
+                info = y.extract_info(f"https://www.youtube.com/watch?v={vid}", download=False)
+            out.append({"client": c, "ok": True, "height": info.get("height"), "s": round(time.time() - t, 1)})
+        except Exception as e:
+            out.append({"client": c, "ok": False, "s": round(time.time() - t, 1), "err": str(e)[-150:]})
+    return jsonify(cookies=os.path.isfile(COOKIES), proxy=bool(PROXY), results=out)
 
 
 LOGIN_HTML = """<!doctype html><meta name=viewport content="width=device-width,initial-scale=1">
